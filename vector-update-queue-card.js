@@ -8,6 +8,7 @@ class VectorUpdateQueueCard extends HTMLElement {
       ...config,
     };
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+    this._openReviews = this._openReviews || new Set();
   }
 
   set hass(hass) {
@@ -55,23 +56,29 @@ class VectorUpdateQueueCard extends HTMLElement {
     }
     const available = updateState.attributes.items || [];
     const queue = queueState.attributes.items || [];
-    const activeIds = new Set(queue.filter((x) => ["pending", "waiting", "running"].includes(x.status)).map((x) => x.id));
     const running = queueState.state === "running";
     const backend = updateState.attributes.backend_url || "https://ops.dmhhome.uk";
     const rows = available.map((item) => {
       const id = item.id || (item.entity_id ? `ha:${item.entity_id}` : "");
       const queued = queue.find((x) => x.id === id && ["pending", "waiting", "running"].includes(x.status));
       const review = item.approved === false || item.review_required === true;
+      const reviewOpen = review && this._openReviews.has(id);
       const status = queued ? (queued.status === "waiting" ? "STAGED" : queued.status.toUpperCase()) : (review ? "REVIEW REQUIRED" : "READY");
       const actions = [];
-      if (!queued && review) actions.push(`<button data-open-review="${this.esc(id)}">REVIEW</button>`);
+      if (!queued && review) actions.push(`<button data-toggle-review="${this.esc(id)}">${reviewOpen ? "CLOSE REVIEW" : "REVIEW"}</button>`);
+      if (!queued && reviewOpen) {
+        actions.push(`<button class="now" data-service="update_now" data-id="${this.esc(id)}">UPDATE NOW</button>`);
+        actions.push(`<button data-service="add_to_queue" data-id="${this.esc(id)}">ADD TO QUEUE</button>`);
+      }
       if (!queued && !review) {
         actions.push(`<button class="now" data-service="update_now" data-id="${this.esc(id)}">UPDATE NOW</button>`);
         actions.push(`<button data-service="add_to_queue" data-id="${this.esc(id)}">ADD TO QUEUE</button>`);
       }
       if (item.url) actions.push(`<a href="${this.esc(item.url)}" target="_blank" rel="noopener">RELEASE NOTES</a>`);
       const version = item.installed && item.latest ? `${item.installed} → ${item.latest}` : (item.image || "");
-      return `<article class="update"><img src="${this.icon(item)}" alt=""><div class="identity"><strong>${this.esc(item.name)}</strong><small>${this.esc(version)}</small></div><span class="status ${status.toLowerCase().replaceAll(" ", "-")}">${status}</span><div class="row-actions">${actions.join("")}</div></article>`;
+      const detail = item.review || {};
+      const reviewPanel = reviewOpen ? `<div class="review-panel"><strong>${this.esc(detail.summary || "Operational review")}</strong><p>${this.esc(detail.justification || item.reason || "Manual review requested")}</p><p><b>IMPACT</b> · ${this.esc(detail.impact || "Brief service interruption may occur")}</p>${(detail.checks || []).length ? `<ul>${detail.checks.map((check) => `<li>${this.esc(check)}</li>`).join("")}</ul>` : ""}</div>` : "";
+      return `<article class="update"><img src="${this.icon(item)}" alt=""><div class="identity"><strong>${this.esc(item.name)}</strong><small>${this.esc(version)}</small></div><span class="status ${status.toLowerCase().replaceAll(" ", "-")}">${status}</span>${reviewPanel}<div class="row-actions">${actions.join("")}</div></article>`;
     }).join("");
     const queueRows = queue.map((item, index) => `<div class="queue-row ${this.esc(item.status)}"><span>${String(index + 1).padStart(2, "0")}</span><span>${this.esc(item.name)}</span><b>${this.esc(item.status === "waiting" ? "STAGED" : item.status?.toUpperCase())}</b>${item.status === "failed" ? `<small>${this.esc(item.message)} · ${this.esc(item.recovery)}</small>` : ""}</div>`).join("");
     this.shadowRoot.innerHTML = `<style>${VectorUpdateQueueCard.styles}</style><ha-card>
@@ -86,14 +93,18 @@ class VectorUpdateQueueCard extends HTMLElement {
       try { await this.service(service, button.dataset.id ? { item_id: button.dataset.id } : {}); }
       finally { setTimeout(() => { button.disabled = false; }, 1200); }
     }));
-    this.shadowRoot.querySelectorAll("[data-open-review]").forEach((button) => button.addEventListener("click", () => window.open(`${backend}/review?id=${encodeURIComponent(button.dataset.openReview)}`, "_blank", "noopener")));
+    this.shadowRoot.querySelectorAll("[data-toggle-review]").forEach((button) => button.addEventListener("click", () => {
+      const id = button.dataset.toggleReview;
+      if (this._openReviews.has(id)) this._openReviews.delete(id); else this._openReviews.add(id);
+      this.render();
+    }));
   }
 }
 
 VectorUpdateQueueCard.styles = `
   :host{--ops-bg:#181818;--ops-surface:#1d1d1d;--ops-line:#555;--ops-blue:#b4d9fe;--ops-amber:#f5a100;--ops-green:#6bcb77;--ops-red:#ff6b6b;display:block}
   ha-card{background:var(--ops-bg);color:#e7e7e7;border:1px dashed var(--ops-amber);font-family:"Courier New",monospace;overflow:hidden}
-  header{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:16px;border-bottom:1px dashed var(--ops-line)}h2{font-size:18px;color:var(--ops-amber);margin:0 0 5px;text-transform:uppercase}small{display:block;color:#858585;font-size:10px}.toolbar,.row-actions,.queue-actions{display:flex;gap:7px;flex-wrap:wrap}button,a{font:10px "Courier New",monospace;letter-spacing:.05em;text-transform:uppercase;background:#191919;color:var(--ops-blue);border:1px dashed var(--ops-blue);padding:8px 10px;text-decoration:none;cursor:pointer}button:disabled{opacity:.35;cursor:not-allowed}.danger{color:var(--ops-red);border-color:var(--ops-red)}.now{color:#111;background:var(--ops-green);border-color:var(--ops-green)}section{border-bottom:1px dashed #363636}.section-title{display:flex;justify-content:space-between;padding:10px 14px;color:var(--ops-blue);font-size:10px;letter-spacing:.1em}.updates{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;padding:0 12px 12px}.update{display:grid;grid-template-columns:54px 1fr auto;gap:11px;align-items:start;background:var(--ops-surface);border:1px dashed var(--ops-line);padding:12px}.update img{width:48px;height:48px;object-fit:contain}.identity{min-width:0}.identity strong{display:block;font-size:12px;margin:3px 0 6px}.identity small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{grid-column:2/4;border-top:1px dashed #3a3a3a;padding-top:7px;font-size:9px;letter-spacing:.09em}.ready{color:var(--ops-green)}.review-required,.running{color:var(--ops-amber)}.pending,.staged{color:var(--ops-blue)}.row-actions{grid-column:2/4}.queue-list{padding:0 14px}.queue-row{display:grid;grid-template-columns:26px 1fr auto;gap:8px;padding:8px 0;border-bottom:1px dashed #353535;font-size:11px}.queue-row small{grid-column:2/4;color:var(--ops-red)}.queue-row.done{color:var(--ops-green)}.queue-row.failed{color:var(--ops-red)}.queue-row.running{color:var(--ops-amber)}.queue-actions{padding:10px 14px}.empty,.missing{padding:28px;text-align:center;color:#858585}@media(max-width:700px){header{align-items:flex-start;flex-direction:column}.updates{grid-template-columns:1fr}.toolbar{width:100%}}
+  header{display:flex;justify-content:space-between;gap:14px;align-items:center;padding:16px;border-bottom:1px dashed var(--ops-line)}h2{font-size:18px;color:var(--ops-amber);margin:0 0 5px;text-transform:uppercase}small{display:block;color:#858585;font-size:10px}.toolbar,.row-actions,.queue-actions{display:flex;gap:7px;flex-wrap:wrap}button,a{font:10px "Courier New",monospace;letter-spacing:.05em;text-transform:uppercase;background:#191919;color:var(--ops-blue);border:1px dashed var(--ops-blue);padding:8px 10px;text-decoration:none;cursor:pointer}button:disabled{opacity:.35;cursor:not-allowed}.danger{color:var(--ops-red);border-color:var(--ops-red)}.now{color:#111;background:var(--ops-green);border-color:var(--ops-green)}section{border-bottom:1px dashed #363636}.section-title{display:flex;justify-content:space-between;padding:10px 14px;color:var(--ops-blue);font-size:10px;letter-spacing:.1em}.updates{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:9px;padding:0 12px 12px}.update{display:grid;grid-template-columns:54px 1fr auto;gap:11px;align-items:start;background:var(--ops-surface);border:1px dashed var(--ops-line);padding:12px}.update img{width:48px;height:48px;object-fit:contain}.identity{min-width:0}.identity strong{display:block;font-size:12px;margin:3px 0 6px}.identity small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{grid-column:2/4;border-top:1px dashed #3a3a3a;padding-top:7px;font-size:9px;letter-spacing:.09em}.ready{color:var(--ops-green)}.review-required,.running{color:var(--ops-amber)}.pending,.staged{color:var(--ops-blue)}.review-panel{grid-column:2/4;border:1px dashed var(--ops-amber);padding:10px;color:#c9c9c9;font-size:10px;line-height:1.45}.review-panel strong,.review-panel b{color:var(--ops-amber)}.review-panel p{margin:6px 0}.review-panel ul{margin:7px 0 0;padding-left:18px}.row-actions{grid-column:2/4}.queue-list{padding:0 14px}.queue-row{display:grid;grid-template-columns:26px 1fr auto;gap:8px;padding:8px 0;border-bottom:1px dashed #353535;font-size:11px}.queue-row small{grid-column:2/4;color:var(--ops-red)}.queue-row.done{color:var(--ops-green)}.queue-row.failed{color:var(--ops-red)}.queue-row.running{color:var(--ops-amber)}.queue-actions{padding:10px 14px}.empty,.missing{padding:28px;text-align:center;color:#858585}@media(max-width:700px){header{align-items:flex-start;flex-direction:column}.updates{grid-template-columns:1fr}.toolbar{width:100%}}
 `;
 
 customElements.define("vector-update-queue-card", VectorUpdateQueueCard);
