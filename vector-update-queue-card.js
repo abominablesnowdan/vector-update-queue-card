@@ -113,6 +113,77 @@ VectorUpdateQueueCard.styles = `
   @media(max-width:700px){header{align-items:flex-start;flex-direction:column}.updates{grid-template-columns:1fr}.toolbar{width:100%}}
 `;
 
-customElements.define("vector-update-queue-card", VectorUpdateQueueCard);
+class VectorOpsOverviewCard extends HTMLElement {
+  setConfig(config) {
+    this.config = {
+      health_entity: "sensor.vector_ops_service_health",
+      infrastructure_entity: "sensor.vector_ops_infrastructure",
+      backup_entity: "sensor.vector_ops_backup",
+      incidents_entity: "sensor.vector_ops_incidents",
+      weather_entity: "sensor.vector_ops_weather",
+      updates_entity: "sensor.vector_ops_updates_available",
+      update_path: "/update-centre/updates",
+      ...config,
+    };
+    this._filter = this._filter || "all";
+    if (!this.shadowRoot) this.attachShadow({ mode: "open" });
+  }
+
+  set hass(hass) { this._hass = hass; this.render(); }
+  getCardSize() { return 16; }
+  getGridOptions() { return { columns: 12, min_columns: 6, rows: 16, min_rows: 8 }; }
+  static getStubConfig() { return {}; }
+  esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
+  icon(key, backend) { return `${backend}/icons/${this.esc(key || "service")}.svg`; }
+  age(hours) { return hours == null ? "—" : hours < 1 ? `${Math.round(hours * 60)}m` : `${Number(hours).toFixed(1)}h`; }
+
+  render() {
+    if (!this._hass || !this.config) return;
+    const state = (id) => this._hass.states[id];
+    const health = state(this.config.health_entity), infra = state(this.config.infrastructure_entity), backup = state(this.config.backup_entity), incidents = state(this.config.incidents_entity), weather = state(this.config.weather_entity), updates = state(this.config.updates_entity);
+    if (!health || !infra || !backup || !incidents || !weather || !updates) {
+      this.shadowRoot.innerHTML = `<ha-card><div class="missing">Vector Ops overview entities are unavailable.</div></ha-card>`;
+      return;
+    }
+    const h = health.attributes, ia = infra.attributes, b = backup.attributes, w = weather.attributes;
+    const backend = updates.attributes.backend_url || "https://ops.dmhhome.uk";
+    const allRoutes = h.routes || [];
+    const routes = allRoutes.filter((x) => this._filter === "all" || (this._filter === "ok" && x.ok) || (this._filter === "bad" && !x.ok));
+    const incidentItems = incidents.attributes.items || [], updateCount = Number(updates.state) || 0;
+    const concerns = [];
+    allRoutes.filter((x) => !x.ok).forEach((x) => concerns.push(`${x.name} route — HTTP ${x.code || "error"}`));
+    (ia.uptime_concerns || []).forEach((x) => concerns.push(`${x.name || "Service"} — ${x.reason || "not up"}`));
+    (ia.hosts || []).forEach((host) => {
+      if (!host.ok) concerns.push(`${host.name} inventory — ${host.error || "collector unavailable"}`);
+      (host.abnormal || []).forEach((x) => concerns.push(`${host.name}: ${x.name} — ${x.status || "abnormal"}`));
+    });
+    if (backup.state !== "healthy") concerns.push(`Backup — ${b.error || this.age(b.age_hours) + " old"}`);
+    const now = new Date();
+    const routeRows = routes.map((x) => `<a class="service" href="${this.esc(x.url)}" target="_blank" rel="noopener"><img src="${this.icon(x.service_key, backend)}" alt=""><span><strong>${this.esc(x.name)}</strong><small>HTTP ${this.esc(x.code || "ERR")} · ${this.esc(x.ms)}ms</small></span><span class="dot ${x.ok ? "good" : "bad"}"></span></a>`).join("") || `<div class="empty">No matching services</div>`;
+    const forecast = (w.forecast || []).map((day) => `<div class="forecast"><strong>${new Date(day.date + "T12:00:00").toLocaleDateString("en-GB", {weekday:"short"})}</strong><span>${this.esc(day.summary)}</span><b>${this.esc(day.high)}°</b><small>${this.esc(day.low)}° · ${this.esc(day.rain)}% rain</small></div>`).join("");
+    const hostRows = (ia.hosts || []).map((host) => `<div class="host"><div><strong>${this.esc(host.name)}</strong><small>${this.esc(host.total)} containers</small></div><span class="label ${host.ok && !(host.abnormal || []).length ? "success" : "error"}">${host.ok && !(host.abnormal || []).length ? "All running" : `${(host.abnormal || []).length} abnormal`}</span></div>`).join("");
+    const uptimeRows = (ia.items || []).map((item) => `<div class="uptime"><img src="${this.icon(item.service_key, backend)}" alt=""><span><strong>${this.esc(item.name)}</strong><small>Continuous uptime</small></span><b class="${item.ok ? "success-text" : "error-text"}">${this.esc(item.display)}</b></div>`).join("");
+    this.shadowRoot.innerHTML = `<style>${VectorOpsOverviewCard.styles}</style><ha-card>
+      <header><div><h2>Vector Ops</h2><small>${health.state === "healthy" ? "All systems nominal" : `${this.esc(h.problems)} need attention`}</small></div><div class="actions"><button data-refresh>Refresh</button><a href="${this.esc(this.config.update_path)}">Update Centre${updateCount ? ` · ${updateCount}` : ""}</a></div></header>
+      <section class="top"><div class="clock"><strong>${now.toLocaleTimeString("en-GB", {hour:"2-digit",minute:"2-digit"})}</strong><span>${now.toLocaleDateString("en-GB", {weekday:"long",day:"2-digit",month:"long",year:"numeric"})}</span></div><div class="weather"><strong>${this.esc(w.temperature)}°C</strong><span>${this.esc(weather.state)} · feels ${this.esc(w.feels_like)}°</span><small>Wind ${this.esc(w.wind)} km/h · rain ${this.esc(w.precipitation)} mm</small></div><details><summary>Five-day forecast</summary><div class="forecasts">${forecast}</div></details></section>
+      <section><div class="section-title"><span>Overview</span></div><div class="metrics"><div><span>Service routes</span><b>${this.esc(h.services_ok)}/${this.esc(h.services_total)}</b></div><div><span>24h uptime</span><b>${ia.uptime_percent == null ? "—" : this.esc(ia.uptime_percent) + "%"}</b></div><div><span>Last backup</span><b>${this.age(b.age_hours)}</b></div><div><span>24h incidents</span><b>${incidentItems.length}</b></div><div><span>Updates</span><b>${updateCount}</b></div></div></section>
+      <section><div class="section-title"><span>Services</span><div class="filters"><button data-filter="all" class="${this._filter === "all" ? "active" : ""}">All</button><button data-filter="ok" class="${this._filter === "ok" ? "active" : ""}">Healthy</button><button data-filter="bad" class="${this._filter === "bad" ? "active" : ""}">Attention</button></div></div><div class="services">${routeRows}</div></section>
+      <section class="split"><div><div class="section-title"><span>Infrastructure uptime</span></div><div class="stack">${uptimeRows}</div></div><div><div class="section-title"><span>Fleet</span></div><div class="stack">${hostRows}</div></div></section>
+      <section class="split"><div><div class="section-title"><span>Operations</span></div><div class="stack"><div class="host"><div><strong>Backup</strong><small>${this.esc(b.services)} services · ${this.esc(b.size)} · ${this.esc(b.duration)}</small></div><span class="label ${backup.state === "healthy" ? "success" : "error"}">${this.esc(backup.state)}</span></div><div class="host"><div><strong>Hermes gateway log</strong><small>Diagnostics retained locally · raw warnings hidden</small></div><span class="label success">Available</span></div></div></div><div><div class="section-title"><span>Attention</span></div><div class="stack">${concerns.length ? concerns.map((x) => `<div class="concern">${this.esc(x)}</div>`).join("") : `<div class="empty success-text">Nothing needs your attention</div>`}</div></div></section>
+      <section><div class="section-title"><span>Incidents · 24 hours</span></div><div class="stack incidents">${incidentItems.length ? incidentItems.map((x) => `<div class="host"><div><strong>${this.esc(x.service)}</strong><small>${this.esc(x.reason || "Recorded event")}</small></div><span class="label">${this.esc(x.action)}</span></div>`).join("") : `<div class="empty success-text">No incidents recorded</div>`}</div></section>
+      <footer>Refreshed ${h.generated_at ? new Date(h.generated_at).toLocaleString("en-GB") : "—"}</footer>
+    </ha-card>`;
+    this.shadowRoot.querySelector("[data-refresh]")?.addEventListener("click", () => this._hass.callService("homeassistant", "update_entity", {entity_id: this.config.health_entity}));
+    this.shadowRoot.querySelectorAll("[data-filter]").forEach((button) => button.addEventListener("click", () => { this._filter = button.dataset.filter; this.render(); }));
+  }
+}
+
+VectorOpsOverviewCard.styles = `
+  :host{--vc-primary:var(--primary-color,#03a9f4);--vc-success:var(--success-color,#43a047);--vc-warning:var(--warning-color,#ffa600);--vc-error:var(--error-color,#db4437);--vc-divider:var(--divider-color,rgba(0,0,0,.12));display:block;color:var(--primary-text-color)}ha-card{background:var(--ha-card-background,var(--card-background-color));color:var(--primary-text-color);border:1px solid var(--ha-card-border-color,var(--vc-divider));border-radius:var(--ha-card-border-radius,12px);box-shadow:var(--ha-card-box-shadow);overflow:hidden}header{display:flex;justify-content:space-between;align-items:center;gap:16px;padding:18px;border-bottom:1px solid var(--vc-divider)}h2{margin:0 0 4px;font-size:22px;font-weight:500}small{color:var(--secondary-text-color)}.actions,.filters{display:flex;gap:8px;flex-wrap:wrap}button,a{font:500 12px inherit;background:transparent;color:var(--vc-primary);border:1px solid var(--vc-primary);border-radius:var(--control-button-border-radius,18px);padding:8px 12px;text-decoration:none;cursor:pointer}button.active{color:var(--text-primary-color,#fff);background:var(--vc-primary)}section{border-bottom:1px solid var(--vc-divider)}.top{display:grid;grid-template-columns:1fr 1fr;gap:18px;padding:18px}.clock,.weather{display:flex;flex-direction:column;gap:4px}.clock strong,.weather>strong{font-size:28px;font-weight:400;color:var(--primary-text-color)}details{grid-column:1/3}summary{color:var(--vc-primary);cursor:pointer}.forecasts{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-top:12px}.forecast{display:flex;flex-direction:column;gap:4px;padding:10px;background:var(--secondary-background-color,var(--card-background-color));border-radius:var(--ha-card-border-radius,12px)}.forecast b{color:var(--vc-primary)}.section-title{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;color:var(--secondary-text-color);font-size:13px;font-weight:500}.metrics{display:grid;grid-template-columns:repeat(5,1fr);gap:1px;background:var(--vc-divider)}.metrics>div{display:flex;flex-direction:column;gap:7px;background:var(--ha-card-background,var(--card-background-color));padding:16px}.metrics span{color:var(--secondary-text-color);font-size:12px}.metrics b{font-size:20px;font-weight:500}.services{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:0 14px 14px}.service{display:grid;grid-template-columns:42px 1fr auto;align-items:center;gap:10px;color:var(--primary-text-color);border-color:var(--vc-divider);border-radius:var(--ha-card-border-radius,12px)}.service img,.uptime img{width:36px;height:36px;object-fit:contain}.service span,.uptime span{display:flex;flex-direction:column;gap:3px}.dot{width:9px;height:9px;border-radius:50%;background:var(--vc-success)}.dot.bad{background:var(--vc-error)}.split{display:grid;grid-template-columns:1fr 1fr}.split>div+div{border-left:1px solid var(--vc-divider)}.stack{display:flex;flex-direction:column;padding:0 16px 14px}.uptime,.host{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:11px 0;border-bottom:1px solid var(--vc-divider)}.uptime>span,.host>div{flex:1;display:flex;flex-direction:column;gap:3px}.label{padding:4px 8px;border-radius:12px;background:var(--secondary-background-color);font-size:11px;text-transform:capitalize}.label.success,.success-text{color:var(--vc-success)}.label.error,.error-text,.concern{color:var(--vc-error)}.concern,.empty{padding:10px 0}.incidents{padding-bottom:14px}footer{padding:12px 16px;color:var(--secondary-text-color);font-size:11px;text-align:right}@media(max-width:800px){header{align-items:flex-start;flex-direction:column}.top,.split{grid-template-columns:1fr}.top details{grid-column:1}.split>div+div{border-left:0;border-top:1px solid var(--vc-divider)}.forecasts{grid-template-columns:repeat(2,1fr)}.metrics{grid-template-columns:repeat(2,1fr)}.services{grid-template-columns:1fr}}
+`;
+
+if (!customElements.get("vector-update-queue-card")) customElements.define("vector-update-queue-card", VectorUpdateQueueCard);
+if (!customElements.get("vector-ops-overview-card")) customElements.define("vector-ops-overview-card", VectorOpsOverviewCard);
 window.customCards = window.customCards || [];
 window.customCards.push({ type: "vector-update-queue-card", name: "Vector Update Queue", description: "Native Vector Ops update queue card" });
+window.customCards.push({ type: "vector-ops-overview-card", name: "Vector Ops Overview", description: "Theme-aware native Vector Ops overview card" });
