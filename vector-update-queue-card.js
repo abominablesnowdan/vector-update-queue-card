@@ -17,6 +17,15 @@ class VectorUpdateQueueCard extends HTMLElement {
 
   getCardSize() { return 8; }
 
+  getGridOptions() {
+    return {
+      columns: 12,
+      min_columns: 6,
+      rows: 8,
+      min_rows: 5,
+    };
+  }
+
   static getStubConfig() { return {}; }
 
   service(name, data = {}) {
