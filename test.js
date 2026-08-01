@@ -3,7 +3,7 @@ const vm = require('vm');
 const code = fs.readFileSync('vector-update-queue-card.js', 'utf8');
 const registered = {};
 class HTMLElement { attachShadow(){ this.shadowRoot = {}; } }
-const context = { HTMLElement, customElements: { get: (n) => registered[n], define: (n,c) => registered[n]=c }, window: {}, console };
+const context = { HTMLElement, URL, customElements: { get: (n) => registered[n], define: (n,c) => registered[n]=c }, window: { location: { origin: 'https://homeassistant.dmhhome.uk' } }, console };
 vm.createContext(context); vm.runInContext(code, context);
 if (!registered['vector-update-queue-card']) throw new Error('queue card not registered');
 if (!registered['vector-ops-overview-card']) throw new Error('overview card not registered');

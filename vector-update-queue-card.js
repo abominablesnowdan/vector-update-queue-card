@@ -9,6 +9,8 @@ class VectorUpdateQueueCard extends HTMLElement {
     };
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._openReviews = this._openReviews || new Set();
+    this._selected = this._selected || new Set();
+    this._notice = this._notice || null;
   }
 
   set hass(hass) {
@@ -38,7 +40,12 @@ class VectorUpdateQueueCard extends HTMLElement {
     if (key === "postgres") key = "postgresql";
     if (key.includes("home-assistant") || key === "file-editor") key = "homeassistant";
     const backend = this._hass.states[this.config.updates_entity]?.attributes?.backend_url || "https://ops.dmhhome.uk";
-    return `${backend}/icons/${key}.svg`;
+    return `${this.safeUrl(backend, "https://ops.dmhhome.uk")}/icons/${encodeURIComponent(key)}.svg`;
+  }
+
+  safeUrl(value, fallback = "#") {
+    try { const url = new URL(value, window.location.origin); return url.protocol === "https:" ? url.href.replace(/\/$/, "") : fallback; }
+    catch { return fallback; }
   }
 
   esc(value) {
@@ -74,15 +81,17 @@ class VectorUpdateQueueCard extends HTMLElement {
         actions.push(`<button class="now" data-service="update_now" data-id="${this.esc(id)}">UPDATE NOW</button>`);
         actions.push(`<button data-service="add_to_queue" data-id="${this.esc(id)}">ADD TO QUEUE</button>`);
       }
-      if (item.url) actions.push(`<a href="${this.esc(item.url)}" target="_blank" rel="noopener">RELEASE NOTES</a>`);
+      if (item.url && this.safeUrl(item.url) !== "#") actions.push(`<a href="${this.esc(this.safeUrl(item.url))}" target="_blank" rel="noopener">RELEASE NOTES</a>`);
       const version = item.installed && item.latest ? `${item.installed} → ${item.latest}` : (item.image || "");
       const detail = item.review || {};
       const reviewPanel = reviewOpen ? `<div class="review-panel"><strong>${this.esc(detail.summary || "Operational review")}</strong><p>${this.esc(detail.justification || item.reason || "Manual review requested")}</p><p><b>IMPACT</b> · ${this.esc(detail.impact || "Brief service interruption may occur")}</p>${(detail.checks || []).length ? `<ul>${detail.checks.map((check) => `<li>${this.esc(check)}</li>`).join("")}</ul>` : ""}</div>` : "";
-      return `<article class="update"><img src="${this.icon(item)}" alt=""><div class="identity"><strong>${this.esc(item.name)}</strong><small>${this.esc(version)}</small></div><span class="status ${status.toLowerCase().replaceAll(" ", "-")}">${status}</span>${reviewPanel}<div class="row-actions">${actions.join("")}</div></article>`;
+      return `<article class="update"><input class="pick" type="checkbox" data-select="${this.esc(id)}" ${this._selected.has(id) ? "checked" : ""} ${queued ? "disabled" : ""}><img src="${this.icon(item)}" alt=""><div class="identity"><strong>${this.esc(item.name)}</strong><small>${this.esc(version)}</small></div><span class="status ${status.toLowerCase().replaceAll(" ", "-")}">${status}</span>${reviewPanel}<div class="row-actions">${actions.join("")}</div></article>`;
     }).join("");
     const queueRows = queue.map((item, index) => `<div class="queue-row ${this.esc(item.status)}"><span>${String(index + 1).padStart(2, "0")}</span><span>${this.esc(item.name)}</span><b>${this.esc(item.status === "waiting" ? "STAGED" : item.status?.toUpperCase())}</b>${item.status === "failed" ? `<small>${this.esc(item.message)} · ${this.esc(item.recovery)}</small>` : ""}</div>`).join("");
     this.shadowRoot.innerHTML = `<style>${VectorUpdateQueueCard.styles}</style><ha-card>
       <header><div><h2>${this.esc(this.config.title)}</h2><small>${updateState.state} AVAILABLE · ${reviewState?.state || 0} REVIEW</small></div><div class="toolbar"><button data-service="refresh_updates">REFRESH</button><button class="danger" data-service="clear_queue" ${!queue.length || running ? "disabled" : ""}>CLEAR QUEUE</button><a href="${backend}/updates" target="_blank" rel="noopener">FULL CENTRE ↗</a></div></header>
+      <div class="batch-toolbar"><button data-select-all>${this._selected.size === available.length && available.length ? "CLEAR SELECTION" : "SELECT ALL"}</button><label>STAGING <select data-interval><option value="0">No delay</option><option value="5">5 minutes</option><option value="10" selected>10 minutes</option><option value="15">15 minutes</option></select></label><button class="now" data-update-selected ${this._selected.size ? "" : "disabled"}>UPDATE SELECTED${this._selected.size ? ` (${this._selected.size})` : ""}</button><button data-update-all ${available.length ? "" : "disabled"}>UPDATE ALL</button></div>
+      ${this._notice ? `<div class="notice ${this._notice.kind}">${this.esc(this._notice.text)}</div>` : ""}
       ${queue.length ? `<section><div class="section-title"><span>QUEUE</span><span>${this.esc(queueState.state).toUpperCase()}</span></div><div class="queue-list">${queueRows}</div><div class="queue-actions"><button data-service="run_pending" ${running || !queue.some((x) => x.status === "pending") ? "disabled" : ""}>RUN PENDING</button></div></section>` : ""}
       <section><div class="section-title"><span>AVAILABLE UPDATES</span><span>${available.length}</span></div><div class="updates">${rows || '<div class="empty">✓ EVERYTHING CURRENT</div>'}</div></section>
     </ha-card>`;
@@ -90,14 +99,38 @@ class VectorUpdateQueueCard extends HTMLElement {
       const service = button.dataset.service;
       if (service === "clear_queue" && !confirm("Clear completed, failed, staged and pending queue entries? Active updates cannot be cleared.")) return;
       button.disabled = true;
-      try { await this.service(service, button.dataset.id ? { item_id: button.dataset.id } : {}); }
-      finally { setTimeout(() => { button.disabled = false; }, 1200); }
+      try { await this.service(service, button.dataset.id ? { item_id: button.dataset.id } : {}); this._notice = { kind: "success", text: "Command accepted by Vector Ops." }; }
+      catch (error) { this._notice = { kind: "error", text: error?.message || "Vector Ops rejected the command." }; }
+      finally { this.render(); setTimeout(() => { button.disabled = false; }, 1200); }
     }));
     this.shadowRoot.querySelectorAll("[data-toggle-review]").forEach((button) => button.addEventListener("click", () => {
       const id = button.dataset.toggleReview;
       if (this._openReviews.has(id)) this._openReviews.delete(id); else this._openReviews.add(id);
       this.render();
     }));
+    this.shadowRoot.querySelectorAll("[data-select]").forEach((input) => input.addEventListener("change", () => {
+      if (input.checked) this._selected.add(input.dataset.select); else this._selected.delete(input.dataset.select);
+      this.render();
+    }));
+    this.shadowRoot.querySelector("[data-select-all]")?.addEventListener("click", () => {
+      const selectable = available.filter((item) => !queue.some((q) => q.id === item.id && ["pending", "waiting", "running"].includes(q.status))).map((item) => item.id || (item.entity_id ? `ha:${item.entity_id}` : ""));
+      if (selectable.length && selectable.every((id) => this._selected.has(id))) this._selected.clear(); else selectable.forEach((id) => this._selected.add(id));
+      this.render();
+    });
+    const runBatch = async (ids) => {
+      if (!ids.length || !confirm(`Start ${ids.length} selected update(s)? Host lanes remain sequential and the configured staging interval will be applied.`)) return;
+      const interval = Number(this.shadowRoot.querySelector("[data-interval]")?.value || 10);
+      try {
+        await this.service("update_batch", { item_ids: ids, interval_minutes: interval });
+        this._selected.clear();
+        this._notice = { kind: "success", text: `Accepted ${ids.length} update(s) with ${interval}-minute staging.` };
+      } catch (error) {
+        this._notice = { kind: "error", text: error?.message || "Vector Ops rejected the batch." };
+      }
+      this.render();
+    };
+    this.shadowRoot.querySelector("[data-update-selected]")?.addEventListener("click", () => runBatch([...this._selected]));
+    this.shadowRoot.querySelector("[data-update-all]")?.addEventListener("click", () => runBatch(available.map((item) => item.id || (item.entity_id ? `ha:${item.entity_id}` : "")).filter(Boolean)));
   }
 }
 
@@ -105,11 +138,11 @@ VectorUpdateQueueCard.styles = `
   :host{--vc-primary:var(--primary-color,#03a9f4);--vc-accent:var(--accent-color,var(--primary-color,#03a9f4));--vc-success:var(--success-color,#43a047);--vc-warning:var(--warning-color,#ffa600);--vc-error:var(--error-color,#db4437);--vc-divider:var(--divider-color,rgba(0,0,0,.12));display:block;color:var(--primary-text-color)}
   ha-card{background:var(--ha-card-background,var(--card-background-color));color:var(--primary-text-color);border:1px solid var(--ha-card-border-color,var(--divider-color));border-radius:var(--ha-card-border-radius,12px);box-shadow:var(--ha-card-box-shadow);font-family:var(--paper-font-body1_-_font-family,inherit);overflow:hidden}
   header{display:flex;justify-content:space-between;gap:16px;align-items:center;padding:16px;border-bottom:1px solid var(--vc-divider)}
-  h2{font-size:18px;color:var(--primary-text-color);margin:0 0 5px;font-weight:500}small{display:block;color:var(--secondary-text-color);font-size:12px}.toolbar,.row-actions,.queue-actions{display:flex;gap:8px;flex-wrap:wrap}
+  h2{font-size:18px;color:var(--primary-text-color);margin:0 0 5px;font-weight:500}small{display:block;color:var(--secondary-text-color);font-size:12px}.toolbar,.row-actions,.queue-actions,.batch-toolbar{display:flex;gap:8px;flex-wrap:wrap}.batch-toolbar{align-items:center;padding:12px 16px;border-bottom:1px solid var(--vc-divider)}.batch-toolbar label{display:flex;align-items:center;gap:7px;color:var(--secondary-text-color);font-size:12px}.batch-toolbar select{background:var(--card-background-color);color:var(--primary-text-color);border:1px solid var(--vc-divider);border-radius:8px;padding:7px}.notice{margin:10px 16px;padding:10px 12px;border-radius:8px;background:var(--secondary-background-color);font-size:12px}.notice.success{color:var(--vc-success);border-left:3px solid var(--vc-success)}.notice.error{color:var(--vc-error);border-left:3px solid var(--vc-error)}
   button,a{font:500 12px var(--paper-font-body1_-_font-family,inherit);background:transparent;color:var(--vc-primary);border:1px solid var(--vc-primary);border-radius:var(--control-button-border-radius,18px);padding:8px 12px;text-decoration:none;cursor:pointer}button:hover,a:hover{background:color-mix(in srgb,var(--vc-primary) 10%,transparent)}button:disabled{opacity:.38;cursor:not-allowed}.danger{color:var(--vc-error);border-color:var(--vc-error)}.now{color:var(--text-primary-color,#fff);background:var(--vc-primary);border-color:var(--vc-primary)}
   section{border-bottom:1px solid var(--vc-divider)}.section-title{display:flex;justify-content:space-between;padding:12px 16px;color:var(--secondary-text-color);font-size:12px;font-weight:500}.updates{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:0 12px 12px}
-  .update{display:grid;grid-template-columns:54px 1fr auto;gap:11px;align-items:start;background:var(--secondary-background-color,var(--card-background-color));border:1px solid var(--vc-divider);border-radius:var(--ha-card-border-radius,12px);padding:12px}.update img{width:48px;height:48px;object-fit:contain}.identity{min-width:0}.identity strong{display:block;font-size:14px;margin:3px 0 6px;font-weight:500}.identity small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{grid-column:2/4;border-top:1px solid var(--vc-divider);padding-top:8px;font-size:11px;font-weight:600}.ready{color:var(--vc-success)}.review-required,.running{color:var(--vc-warning)}.pending,.staged{color:var(--vc-primary)}
-  .review-panel{grid-column:2/4;border-left:3px solid var(--vc-warning);border-radius:4px;padding:10px;background:color-mix(in srgb,var(--vc-warning) 8%,transparent);color:var(--primary-text-color);font-size:12px;line-height:1.45}.review-panel strong,.review-panel b{color:var(--primary-text-color)}.review-panel p{margin:6px 0}.review-panel ul{margin:7px 0 0;padding-left:18px}.row-actions{grid-column:2/4}.queue-list{padding:0 16px}.queue-row{display:grid;grid-template-columns:26px 1fr auto;gap:8px;padding:10px 0;border-bottom:1px solid var(--vc-divider);font-size:13px}.queue-row small{grid-column:2/4;color:var(--vc-error)}.queue-row.done{color:var(--vc-success)}.queue-row.failed{color:var(--vc-error)}.queue-row.running{color:var(--vc-warning)}.queue-actions{padding:12px 16px}.empty,.missing{padding:28px;text-align:center;color:var(--secondary-text-color)}
+  .update{display:grid;grid-template-columns:28px 54px 1fr auto;gap:11px;align-items:start;background:var(--secondary-background-color,var(--card-background-color));border:1px solid var(--vc-divider);border-radius:var(--ha-card-border-radius,12px);padding:12px}.update img{width:48px;height:48px;object-fit:contain}.identity{min-width:0}.identity strong{display:block;font-size:14px;margin:3px 0 6px;font-weight:500}.identity small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{grid-column:3/5;border-top:1px solid var(--vc-divider);padding-top:8px;font-size:11px;font-weight:600}.ready{color:var(--vc-success)}.review-required,.running{color:var(--vc-warning)}.pending,.staged{color:var(--vc-primary)}
+  .review-panel{grid-column:3/5;border-left:3px solid var(--vc-warning);border-radius:4px;padding:10px;background:color-mix(in srgb,var(--vc-warning) 8%,transparent);color:var(--primary-text-color);font-size:12px;line-height:1.45}.review-panel strong,.review-panel b{color:var(--primary-text-color)}.review-panel p{margin:6px 0}.review-panel ul{margin:7px 0 0;padding-left:18px}.row-actions{grid-column:3/5}.queue-list{padding:0 16px}.queue-row{display:grid;grid-template-columns:26px 1fr auto;gap:8px;padding:10px 0;border-bottom:1px solid var(--vc-divider);font-size:13px}.queue-row small{grid-column:2/4;color:var(--vc-error)}.queue-row.done{color:var(--vc-success)}.queue-row.failed{color:var(--vc-error)}.queue-row.running{color:var(--vc-warning)}.queue-actions{padding:12px 16px}.empty,.missing{padding:28px;text-align:center;color:var(--secondary-text-color)}
   @media(max-width:700px){header{align-items:flex-start;flex-direction:column}.updates{grid-template-columns:1fr}.toolbar{width:100%}}
 `;
 
@@ -134,7 +167,8 @@ class VectorOpsOverviewCard extends HTMLElement {
   getGridOptions() { return { columns: 12, min_columns: 6, rows: 16, min_rows: 8 }; }
   static getStubConfig() { return {}; }
   esc(value) { return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
-  icon(key, backend) { return `${backend}/icons/${this.esc(key || "service")}.svg`; }
+  safeUrl(value, fallback = "#") { try { const url = new URL(value, window.location.origin); return url.protocol === "https:" ? url.href.replace(/\/$/, "") : fallback; } catch { return fallback; } }
+  icon(key, backend) { return `${this.safeUrl(backend, "https://ops.dmhhome.uk")}/icons/${encodeURIComponent(key || "service")}.svg`; }
   age(hours) { return hours == null ? "—" : hours < 1 ? `${Math.round(hours * 60)}m` : `${Number(hours).toFixed(1)}h`; }
 
   render() {
@@ -160,7 +194,7 @@ class VectorOpsOverviewCard extends HTMLElement {
     });
     if (backup.state !== "healthy") concerns.push(`Backup — ${b.error || this.age(b.age_hours) + " old"}`);
     const now = new Date();
-    const routeRows = routes.map((x) => `<a class="service" href="${this.esc(x.url)}" target="_blank" rel="noopener"><img src="${this.icon(x.service_key, backend)}" alt=""><span><strong>${this.esc(x.name)}</strong><small>HTTP ${this.esc(x.code || "ERR")} · ${this.esc(x.ms)}ms</small></span><span class="dot ${x.ok ? "good" : "bad"}"></span></a>`).join("") || `<div class="empty">No matching services</div>`;
+    const routeRows = routes.map((x) => `<a class="service" href="${this.esc(this.safeUrl(x.url))}" target="_blank" rel="noopener"><img src="${this.icon(x.service_key, backend)}" alt=""><span><strong>${this.esc(x.name)}</strong><small>HTTP ${this.esc(x.code || "ERR")} · ${this.esc(x.ms)}ms</small></span><span class="dot ${x.ok ? "good" : "bad"}"></span></a>`).join("") || `<div class="empty">No matching services</div>`;
     const forecast = (w.forecast || []).map((day) => `<div class="forecast"><strong>${new Date(day.date + "T12:00:00").toLocaleDateString("en-GB", {weekday:"short"})}</strong><span>${this.esc(day.summary)}</span><b>${this.esc(day.high)}°</b><small>${this.esc(day.low)}° · ${this.esc(day.rain)}% rain</small></div>`).join("");
     const hostRows = (ia.hosts || []).map((host) => `<div class="host"><div><strong>${this.esc(host.name)}</strong><small>${this.esc(host.total)} containers</small></div><span class="label ${host.ok && !(host.abnormal || []).length ? "success" : "error"}">${host.ok && !(host.abnormal || []).length ? "All running" : `${(host.abnormal || []).length} abnormal`}</span></div>`).join("");
     const uptimeRows = (ia.items || []).map((item) => `<div class="uptime"><img src="${this.icon(item.service_key, backend)}" alt=""><span><strong>${this.esc(item.name)}</strong><small>Continuous uptime</small></span><b class="${item.ok ? "success-text" : "error-text"}">${this.esc(item.display)}</b></div>`).join("");
