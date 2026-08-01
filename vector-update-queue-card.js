@@ -7,6 +7,7 @@ class VectorUpdateQueueCard extends HTMLElement {
       title: "Vector Update Centre",
       ...config,
     };
+    this._stateRefs = null;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._openReviews = this._openReviews || new Set();
     this._selected = this._selected || new Set();
@@ -14,6 +15,10 @@ class VectorUpdateQueueCard extends HTMLElement {
   }
 
   set hass(hass) {
+    const ids = this.config ? [this.config.updates_entity, this.config.queue_entity, this.config.review_entity] : [];
+    const refs = ids.map((id) => hass.states[id]);
+    if (this._stateRefs && refs.every((ref, index) => ref === this._stateRefs[index])) { this._hass = hass; return; }
+    this._stateRefs = refs;
     this._hass = hass;
     this.render();
   }
@@ -62,6 +67,7 @@ class VectorUpdateQueueCard extends HTMLElement {
       return;
     }
     const available = updateState.attributes.items || [];
+    const partialErrors = updateState.attributes.partial_errors || {};
     const queue = queueState.attributes.items || [];
     const running = queueState.state === "running";
     const backend = updateState.attributes.backend_url || "https://ops.dmhhome.uk";
@@ -91,6 +97,7 @@ class VectorUpdateQueueCard extends HTMLElement {
     this.shadowRoot.innerHTML = `<style>${VectorUpdateQueueCard.styles}</style><ha-card>
       <header><div><h2>${this.esc(this.config.title)}</h2><small>${updateState.state} AVAILABLE · ${reviewState?.state || 0} REVIEW</small></div><div class="toolbar"><button data-service="refresh_updates">REFRESH</button><button class="danger" data-service="clear_queue" ${!queue.length || running ? "disabled" : ""}>CLEAR QUEUE</button><a href="${backend}/updates" target="_blank" rel="noopener">FULL CENTRE ↗</a></div></header>
       <div class="batch-toolbar"><button data-select-all>${this._selected.size === available.length && available.length ? "CLEAR SELECTION" : "SELECT ALL"}</button><label>STAGING <select data-interval><option value="0">No delay</option><option value="5">5 minutes</option><option value="10" selected>10 minutes</option><option value="15">15 minutes</option></select></label><button class="now" data-update-selected ${this._selected.size ? "" : "disabled"}>UPDATE SELECTED${this._selected.size ? ` (${this._selected.size})` : ""}</button><button data-update-all ${available.length ? "" : "disabled"}>UPDATE ALL</button></div>
+      ${Object.keys(partialErrors).length ? `<div class="notice error">Partial data: ${this.esc(Object.entries(partialErrors).map(([key, value]) => `${key}: ${value}`).join(" · "))}</div>` : ""}
       ${this._notice ? `<div class="notice ${this._notice.kind}">${this.esc(this._notice.text)}</div>` : ""}
       ${queue.length ? `<section><div class="section-title"><span>QUEUE</span><span>${this.esc(queueState.state).toUpperCase()}</span></div><div class="queue-list">${queueRows}</div><div class="queue-actions"><button data-service="run_pending" ${running || !queue.some((x) => x.status === "pending") ? "disabled" : ""}>RUN PENDING</button></div></section>` : ""}
       <section><div class="section-title"><span>AVAILABLE UPDATES</span><span>${available.length}</span></div><div class="updates">${rows || '<div class="empty">✓ EVERYTHING CURRENT</div>'}</div></section>
@@ -159,10 +166,18 @@ class VectorOpsOverviewCard extends HTMLElement {
       ...config,
     };
     this._filter = this._filter || "all";
+    this._stateRefs = null;
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
   }
 
-  set hass(hass) { this._hass = hass; this.render(); }
+  set hass(hass) {
+    const ids = this.config ? [this.config.health_entity, this.config.infrastructure_entity, this.config.backup_entity, this.config.incidents_entity, this.config.weather_entity, this.config.updates_entity] : [];
+    const refs = ids.map((id) => hass.states[id]);
+    if (this._stateRefs && refs.every((ref, index) => ref === this._stateRefs[index])) { this._hass = hass; return; }
+    this._stateRefs = refs;
+    this._hass = hass;
+    this.render();
+  }
   getCardSize() { return 16; }
   getGridOptions() { return { columns: 12, min_columns: 6, rows: 16, min_rows: 8 }; }
   static getStubConfig() { return {}; }
@@ -185,6 +200,7 @@ class VectorOpsOverviewCard extends HTMLElement {
     const routes = allRoutes.filter((x) => this._filter === "all" || (this._filter === "ok" && x.ok) || (this._filter === "bad" && !x.ok));
     const incidentItems = incidents.attributes.items || [], updateCount = Number(updates.state) || 0;
     const concerns = [];
+    Object.entries(h.partial_errors || {}).forEach(([key, value]) => concerns.push(`${key} data — ${value}`));
     allRoutes.filter((x) => !x.ok).forEach((x) => concerns.push(`${x.name} route — HTTP ${x.code || "error"}`));
     (ia.items || []).filter((x) => !x.ok).forEach((x) => concerns.push(`${x.name} uptime — ${x.detail || "data unavailable"}`));
     (ia.uptime_concerns || []).forEach((x) => concerns.push(`${x.name || "Service"} — ${x.reason || "not up"}`));
