@@ -30,4 +30,7 @@ const overviewStates = Object.fromEntries([
 overview.hass = { states: overviewStates };
 overview.hass = { states: { ...overviewStates, 'sensor.unrelated': {} } };
 if (overviewRenders !== 1) throw new Error('overview card rerendered for unrelated state');
+if (!code.includes('/vector_ops_static/icons/')) throw new Error('icons are not served from the Home Assistant origin');
+if (!code.includes('.dot.warn{background:var(--vc-warning)}')) throw new Error('authentication warning style missing');
+if (!code.includes('rows: "auto"')) throw new Error('overview card does not advertise auto height');
 console.log('card_contract=passed');
