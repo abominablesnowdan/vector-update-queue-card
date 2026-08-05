@@ -33,4 +33,10 @@ if (overviewRenders !== 1) throw new Error('overview card rerendered for unrelat
 if (!code.includes('/vector_ops_static/icons/')) throw new Error('icons are not served from the Home Assistant origin');
 if (!code.includes('.dot.warn{background:var(--vc-warning)}')) throw new Error('authentication warning style missing');
 if (!code.includes('rows: "auto"')) throw new Error('overview card does not advertise auto height');
+const generatedAt = '2026-08-05T22:40:20+01:00';
+const finishedAfterInventory = { id: 'apollo:sonarr', status: 'done', finished_at: '2026-08-05T22:40:25+01:00' };
+const finishedBeforeInventory = { id: 'apollo:sonarr', status: 'done', finished_at: '2026-08-05T22:40:15+01:00' };
+if (card.queuePresentation(finishedAfterInventory, generatedAt) !== 'verifying') throw new Error('recent completion should remain locked while inventory is stale');
+if (card.queuePresentation(finishedBeforeInventory, generatedAt) !== null) throw new Error('verified completion should become actionable when still offered');
+if (card.queuePresentation(null, generatedAt, true) !== 'sending') throw new Error('accepted command should lock immediately before entity refresh');
 console.log('card_contract=passed');

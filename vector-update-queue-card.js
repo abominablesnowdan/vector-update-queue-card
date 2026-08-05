@@ -11,6 +11,7 @@ class VectorUpdateQueueCard extends HTMLElement {
     if (!this.shadowRoot) this.attachShadow({ mode: "open" });
     this._openReviews = this._openReviews || new Set();
     this._selected = this._selected || new Set();
+    this._commandIds = this._commandIds || new Set();
     this._notice = this._notice || null;
   }
 
@@ -40,6 +41,14 @@ class VectorUpdateQueueCard extends HTMLElement {
     return this._hass.callService("vector_ops", name, data);
   }
 
+  queuePresentation(item, generatedAt, commandPending = false) {
+    if (commandPending && !item) return "sending";
+    if (!item) return null;
+    if (["pending", "waiting", "running"].includes(item.status)) return item.status;
+    if (item.status === "done" && item.finished_at && generatedAt && new Date(item.finished_at) > new Date(generatedAt)) return "verifying";
+    return null;
+  }
+
   icon(item) {
     let key = item.service_key || "service";
     if (key === "postgres") key = "postgresql";
@@ -66,16 +75,20 @@ class VectorUpdateQueueCard extends HTMLElement {
       return;
     }
     const available = updateState.attributes.items || [];
+    const generatedAt = updateState.attributes.generated_at;
     const partialErrors = updateState.attributes.partial_errors || {};
     const queue = queueState.attributes.items || [];
     const running = queueState.state === "running";
     const backend = updateState.attributes.backend_url || "https://ops.dmhhome.uk";
     const rows = available.map((item) => {
       const id = item.id || (item.entity_id ? `ha:${item.entity_id}` : "");
-      const queued = queue.find((x) => x.id === id && ["pending", "waiting", "running"].includes(x.status));
+      const queueItem = queue.find((x) => x.id === id);
+      if (queueItem) this._commandIds.delete(id);
+      const queueStatus = this.queuePresentation(queueItem, generatedAt, this._commandIds.has(id));
+      const queued = Boolean(queueStatus);
       const review = item.approved === false || item.review_required === true;
       const reviewOpen = review && this._openReviews.has(id);
-      const status = queued ? (queued.status === "waiting" ? "STAGED" : queued.status.toUpperCase()) : (review ? "REVIEW REQUIRED" : "READY");
+      const status = queued ? (queueStatus === "waiting" ? "STAGED" : queueStatus.toUpperCase()) : (review ? "REVIEW REQUIRED" : "READY");
       const actions = [];
       if (!queued && review) actions.push(`<button data-toggle-review="${this.esc(id)}">${reviewOpen ? "CLOSE REVIEW" : "REVIEW"}</button>`);
       if (!queued && reviewOpen) {
@@ -105,8 +118,10 @@ class VectorUpdateQueueCard extends HTMLElement {
       const service = button.dataset.service;
       if (service === "clear_queue" && !confirm("Clear completed, failed, staged and pending queue entries? Active updates cannot be cleared.")) return;
       button.disabled = true;
-      try { await this.service(service, button.dataset.id ? { item_id: button.dataset.id } : {}); this._notice = { kind: "success", text: "Command accepted by Vector Ops." }; }
-      catch (error) { this._notice = { kind: "error", text: error?.message || "Vector Ops rejected the command." }; }
+      const commandId = button.dataset.id;
+      if (commandId) { this._commandIds.add(commandId); this.render(); }
+      try { await this.service(service, commandId ? { item_id: commandId } : {}); this._notice = { kind: "success", text: "Command accepted by Vector Ops." }; }
+      catch (error) { if (commandId) this._commandIds.delete(commandId); this._notice = { kind: "error", text: error?.message || "Vector Ops rejected the command." }; }
       finally { this.render(); setTimeout(() => { button.disabled = false; }, 1200); }
     }));
     this.shadowRoot.querySelectorAll("[data-toggle-review]").forEach((button) => button.addEventListener("click", () => {
@@ -147,7 +162,7 @@ VectorUpdateQueueCard.styles = `
   h2{font-size:18px;color:var(--primary-text-color);margin:0 0 5px;font-weight:500}small{display:block;color:var(--secondary-text-color);font-size:12px}.toolbar,.row-actions,.queue-actions,.batch-toolbar{display:flex;gap:8px;flex-wrap:wrap}.batch-toolbar{align-items:center;padding:12px 16px;border-bottom:1px solid var(--vc-divider)}.batch-toolbar label{display:flex;align-items:center;gap:7px;color:var(--secondary-text-color);font-size:12px}.batch-toolbar select{background:var(--card-background-color);color:var(--primary-text-color);border:1px solid var(--vc-divider);border-radius:8px;padding:7px}.notice{margin:10px 16px;padding:10px 12px;border-radius:8px;background:var(--secondary-background-color);font-size:12px}.notice.success{color:var(--vc-success);border-left:3px solid var(--vc-success)}.notice.error{color:var(--vc-error);border-left:3px solid var(--vc-error)}
   button,a{font:500 12px var(--paper-font-body1_-_font-family,inherit);background:transparent;color:var(--vc-primary);border:1px solid var(--vc-primary);border-radius:var(--control-button-border-radius,18px);padding:8px 12px;text-decoration:none;cursor:pointer}button:hover,a:hover{background:color-mix(in srgb,var(--vc-primary) 10%,transparent)}button:disabled{opacity:.38;cursor:not-allowed}.danger{color:var(--vc-error);border-color:var(--vc-error)}.now{color:var(--text-primary-color,#fff);background:var(--vc-primary);border-color:var(--vc-primary)}
   section{border-bottom:1px solid var(--vc-divider)}.section-title{display:flex;justify-content:space-between;padding:12px 16px;color:var(--secondary-text-color);font-size:12px;font-weight:500}.updates{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;padding:0 12px 12px}
-  .update{display:grid;grid-template-columns:28px 54px 1fr auto;gap:11px;align-items:start;background:var(--secondary-background-color,var(--card-background-color));border:1px solid var(--vc-divider);border-radius:var(--ha-card-border-radius,12px);padding:12px}.update img{width:48px;height:48px;object-fit:contain}.identity{min-width:0}.identity strong{display:block;font-size:14px;margin:3px 0 6px;font-weight:500}.identity small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{grid-column:3/5;border-top:1px solid var(--vc-divider);padding-top:8px;font-size:11px;font-weight:600}.ready{color:var(--vc-success)}.review-required,.running{color:var(--vc-warning)}.pending,.staged{color:var(--vc-primary)}
+  .update{display:grid;grid-template-columns:28px 54px 1fr auto;gap:11px;align-items:start;background:var(--secondary-background-color,var(--card-background-color));border:1px solid var(--vc-divider);border-radius:var(--ha-card-border-radius,12px);padding:12px}.update img{width:48px;height:48px;object-fit:contain}.identity{min-width:0}.identity strong{display:block;font-size:14px;margin:3px 0 6px;font-weight:500}.identity small{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.status{grid-column:3/5;border-top:1px solid var(--vc-divider);padding-top:8px;font-size:11px;font-weight:600}.ready{color:var(--vc-success)}.review-required,.running,.sending,.verifying{color:var(--vc-warning)}.pending,.staged{color:var(--vc-primary)}
   .review-panel{grid-column:3/5;border-left:3px solid var(--vc-warning);border-radius:4px;padding:10px;background:color-mix(in srgb,var(--vc-warning) 8%,transparent);color:var(--primary-text-color);font-size:12px;line-height:1.45}.review-panel strong,.review-panel b{color:var(--primary-text-color)}.review-panel p{margin:6px 0}.review-panel ul{margin:7px 0 0;padding-left:18px}.row-actions{grid-column:3/5}.queue-list{padding:0 16px}.queue-row{display:grid;grid-template-columns:26px 1fr auto;gap:8px;padding:10px 0;border-bottom:1px solid var(--vc-divider);font-size:13px}.queue-row small{grid-column:2/4;color:var(--vc-error)}.queue-row.done{color:var(--vc-success)}.queue-row.failed{color:var(--vc-error)}.queue-row.running{color:var(--vc-warning)}.queue-actions{padding:12px 16px}.empty,.missing{padding:28px;text-align:center;color:var(--secondary-text-color)}
   @media(max-width:700px){header{align-items:flex-start;flex-direction:column}.updates{grid-template-columns:1fr}.toolbar{width:100%}}
 `;
