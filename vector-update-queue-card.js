@@ -176,6 +176,7 @@ class VectorOpsOverviewCard extends HTMLElement {
       incidents_entity: "sensor.vector_ops_incidents",
       weather_entity: "sensor.vector_ops_weather",
       updates_entity: "sensor.vector_ops_updates_available",
+      uptime_kuma_status_entities: [],
       update_path: "/update-centre/updates",
       ...config,
     };
@@ -186,8 +187,9 @@ class VectorOpsOverviewCard extends HTMLElement {
 
   set hass(hass) {
     const ids = this.config ? [this.config.health_entity, this.config.infrastructure_entity, this.config.backup_entity, this.config.incidents_entity, this.config.weather_entity, this.config.updates_entity] : [];
-    const refs = ids.map((id) => hass.states[id]);
-    if (this._stateRefs && refs.every((ref, index) => ref === this._stateRefs[index])) { this._hass = hass; return; }
+    const kumaIds = (this.config?.uptime_kuma_status_entities || []).flatMap((id) => [id, id.replace(/_status$/, "_response_time")]);
+    const refs = [...ids, ...kumaIds].map((id) => hass.states[id]);
+    if (this._stateRefs && refs.length === this._stateRefs.length && refs.every((ref, index) => ref === this._stateRefs[index])) { this._hass = hass; return; }
     this._stateRefs = refs;
     this._hass = hass;
     this.render();
@@ -199,6 +201,15 @@ class VectorOpsOverviewCard extends HTMLElement {
   safeUrl(value, fallback = "#") { try { const url = new URL(value, window.location.origin); return url.protocol === "https:" ? url.href.replace(/\/$/, "") : fallback; } catch { return fallback; } }
   icon(key) { return `/vector_ops_static/icons/${encodeURIComponent(key || "service")}.svg`; }
   age(hours) { return hours == null ? "—" : hours < 1 ? `${Math.round(hours * 60)}m` : `${Number(hours).toFixed(1)}h`; }
+  kumaStatusItems(states) {
+    const known = new Set(["up", "down", "pending", "maintenance"]);
+    return (this.config?.uptime_kuma_status_entities || []).map((id) => [id, states?.[id]]).filter(([, value]) => known.has(value?.state)).map(([id, value]) => {
+      const stem = id.slice(7, -7);
+      const friendly = value.attributes?.friendly_name || stem.replaceAll("_", " ");
+      const response = states[`sensor.${stem}_response_time`];
+      return { id, name: friendly.replace(/ status$/i, ""), state: value.state, response: response?.state };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+  }
 
   render() {
     if (!this._hass || !this.config) return;
@@ -209,6 +220,8 @@ class VectorOpsOverviewCard extends HTMLElement {
       return;
     }
     const h = health.attributes, ia = infra.attributes, b = backup.attributes, w = weather.attributes;
+    const kumaItems = this.kumaStatusItems(this._hass.states);
+    const kumaProblems = kumaItems.filter((item) => item.state !== "up");
     const backend = updates.attributes.backend_url || "https://ops.dmhhome.uk";
     const allRoutes = h.routes || [];
     const routeHealthy = (x) => x.ok && Number(x.code) >= 200 && Number(x.code) < 400;
@@ -219,6 +232,7 @@ class VectorOpsOverviewCard extends HTMLElement {
     allRoutes.filter((x) => !routeHealthy(x)).forEach((x) => concerns.push(`${x.name} route — HTTP ${x.code || "error"}${x.ok && [401,403].includes(Number(x.code)) ? " (authentication required)" : ""}`));
     (ia.items || []).filter((x) => !x.ok).forEach((x) => concerns.push(`${x.name} uptime — ${x.detail || "data unavailable"}`));
     (ia.uptime_concerns || []).forEach((x) => concerns.push(`${x.name || "Service"} — ${x.reason || "not up"}`));
+    kumaProblems.forEach((x) => concerns.push(`${x.name} — Kuma ${x.state}`));
     (ia.hosts || []).forEach((host) => {
       if (!host.ok) concerns.push(`${host.name} inventory — ${host.error || "collector unavailable"}`);
       (host.abnormal || []).forEach((x) => concerns.push(`${host.name}: ${x.name} — ${x.status || "abnormal"}`));
@@ -229,12 +243,14 @@ class VectorOpsOverviewCard extends HTMLElement {
     const forecast = (w.forecast || []).map((day) => `<div class="forecast"><strong>${new Date(day.date + "T12:00:00").toLocaleDateString("en-GB", {weekday:"short"})}</strong><span>${this.esc(day.summary)}</span><b>${this.esc(day.high)}°</b><small>${this.esc(day.low)}° · ${this.esc(day.rain)}% rain</small></div>`).join("");
     const hostRows = (ia.hosts || []).map((host) => `<div class="fleet-host"><div class="host"><div><strong>${this.esc(host.name)}</strong><small>${this.esc(host.total)} containers</small></div><span class="label ${host.ok && !(host.abnormal || []).length ? "success" : "error"}">${host.ok && !(host.abnormal || []).length ? "All running" : `${(host.abnormal || []).length} abnormal`}</span></div><div class="container-grid">${(host.containers || []).map((item) => `<div class="container"><img src="${this.icon(item.service_key)}" alt="" onerror="this.onerror=null;this.src='${this.icon("service")}'"><span><strong>${this.esc(item.name)}</strong><small>${this.esc(item.status)}</small></span><span class="dot ${item.ok ? "good" : "bad"}"></span></div>`).join("") || `<div class="empty">Container inventory unavailable</div>`}</div></div>`).join("");
     const uptimeRows = (ia.items || []).map((item) => `<div class="uptime"><img src="${this.icon(item.service_key)}" alt="" onerror="this.onerror=null;this.src='${this.icon("service")}'"><span><strong>${this.esc(item.name)}</strong><small>Continuous uptime</small></span><b class="${item.ok ? "success-text" : "error-text"}">${this.esc(item.display)}</b></div>`).join("");
+    const kumaRows = kumaItems.map((item) => `<div class="uptime"><span><strong>${this.esc(item.name)}</strong><small>${item.response && item.response !== "unknown" ? `${this.esc(item.response)} ms` : "Native Uptime Kuma"}</small></span><b class="${item.state === "up" ? "success-text" : "error-text"}">${this.esc(item.state).toUpperCase()}</b></div>`).join("");
     this.shadowRoot.innerHTML = `<style>${VectorOpsOverviewCard.styles}</style><ha-card>
       <header><div><h2>Vector Ops</h2><small>${concerns.length ? `${concerns.length} need attention` : "All systems nominal"}</small></div><div class="actions"><button data-refresh>Refresh</button><a href="${this.esc(this.config.update_path)}">Update Centre${updateCount ? ` · ${updateCount}` : ""}</a></div></header>
       <section class="top"><div class="clock"><strong>${now.toLocaleTimeString("en-GB", {hour:"2-digit",minute:"2-digit"})}</strong><span>${now.toLocaleDateString("en-GB", {weekday:"long",day:"2-digit",month:"long",year:"numeric"})}</span></div><div class="weather"><strong>${this.esc(w.temperature)}°C</strong><span>${this.esc(weather.state)} · feels ${this.esc(w.feels_like)}°</span><small>Wind ${this.esc(w.wind)} km/h · rain ${this.esc(w.precipitation)} mm</small></div><details><summary>Five-day forecast</summary><div class="forecasts">${forecast}</div></details></section>
       <section><div class="section-title"><span>Overview</span></div><div class="metrics"><div><span>Service routes</span><b>${this.esc(h.services_ok)}/${this.esc(h.services_total)}</b></div><div><span>24h uptime</span><b>${ia.uptime_percent == null ? "—" : this.esc(ia.uptime_percent) + "%"}</b></div><div><span>Last backup</span><b>${this.age(b.age_hours)}</b></div><div><span>24h incidents</span><b>${incidentItems.length}</b></div><div><span>Updates</span><b>${updateCount}</b></div></div></section>
       <section><div class="section-title"><span>Services</span><div class="filters"><button data-filter="all" class="${this._filter === "all" ? "active" : ""}">All</button><button data-filter="ok" class="${this._filter === "ok" ? "active" : ""}">Healthy</button><button data-filter="bad" class="${this._filter === "bad" ? "active" : ""}">Attention</button></div></div><div class="services">${routeRows}</div></section>
       <section class="split"><div><div class="section-title"><span>Infrastructure uptime</span></div><div class="stack">${uptimeRows}</div></div><div><div class="section-title"><span>Fleet</span></div><div class="stack">${hostRows}</div></div></section>
+      <section><div class="section-title"><span>Uptime Kuma · native Home Assistant</span><span>${kumaItems.length - kumaProblems.length}/${kumaItems.length} up</span></div><div class="services">${kumaRows || `<div class="empty">Uptime Kuma entities unavailable</div>`}</div></section>
       <section class="split"><div><div class="section-title"><span>Operations</span></div><div class="stack"><div class="host"><div><strong>Backup</strong><small>${this.esc(b.services)} services · ${this.esc(b.size)} · ${this.esc(b.duration)}</small></div><span class="label ${backup.state === "healthy" ? "success" : "error"}">${this.esc(backup.state)}</span></div><div class="host"><div><strong>Hermes gateway log</strong><small>Diagnostics retained locally · raw warnings hidden</small></div><span class="label success">Available</span></div></div></div><div><div class="section-title"><span>Attention</span></div><div class="stack">${concerns.length ? concerns.map((x) => `<div class="concern">${this.esc(x)}</div>`).join("") : `<div class="empty success-text">Nothing needs your attention</div>`}</div></div></section>
       <section><div class="section-title"><span>Incidents · 24 hours</span></div><div class="stack incidents">${incidentItems.length ? incidentItems.map((x) => `<div class="host"><div><strong>${this.esc(x.service)}</strong><small>${this.esc(x.reason || "Recorded event")}</small></div><span class="label">${this.esc(x.action)}</span></div>`).join("") : `<div class="empty success-text">No incidents recorded</div>`}</div></section>
       <footer>Refreshed ${h.generated_at ? new Date(h.generated_at).toLocaleString("en-GB") : "—"}</footer>
